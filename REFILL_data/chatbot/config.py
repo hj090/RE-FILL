@@ -17,3 +17,7 @@ AIRTABLE_CHAT_TABLE = os.getenv("AIRTABLE_CHAT_TABLE", "Chat_Sessions")
 AIRTABLE_ANALYSIS_TABLE = os.getenv("AIRTABLE_ANALYSIS_TABLE", "Analysis_Reports")
 
 AIRTABLE_BASE_URL = f"https://api.airtable.com/v0/{AIRTABLE_BASE_ID}"
+
+# DUR API (식품의약품안전처)
+DUR_API_KEY = os.getenv("DUR_API_KEY")
+DUR_BASE_URL = "https://apis.data.go.kr/1471000/DURPrdlstInfoService03"

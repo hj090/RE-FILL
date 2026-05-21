@@ -22,7 +22,7 @@ from airtable_client import (
     get_user_medications,
     save_chat_log,
 )
-from solar_client import chat
+from solar_client import chat, analyze_medications
 
 app = FastAPI(
     title="REFILL API",
@@ -86,6 +86,19 @@ class HistoryItem(BaseModel):
     scanned_at: Optional[str] = None
     medication_count: Optional[int] = None
     solar_summary: Optional[str] = None
+
+
+class AnalyzeRequest(BaseModel):
+    user_id: str
+    medications: List[dict]  # [{"drug_name": "메트포르민", "dosage": "500mg", "frequency": "1일2회"}, ...]
+
+
+class AnalyzeResponse(BaseModel):
+    overall_nutrients_depleted: str
+    overall_supplements_recommended: str
+    dosage_guide: str
+    warnings: str
+    full_report: str
 
 
 # ============================================================
@@ -195,7 +208,47 @@ async def history(user_id: str = Query(..., description="사용자 고유 ID")):
     ]
 
 
-# --- 4. AI 챗봇 ---
+# --- 4. 처방전 분석 (n8n용, RAG 포함) ---
+
+@app.post("/analyze", response_model=AnalyzeResponse)
+async def analyze_endpoint(req: AnalyzeRequest):
+    """
+    n8n에서 호출하는 처방전 분석 엔드포인트.
+    - 약물 목록을 받아서 RAG 검색 + Solar LLM으로 구조화된 분석 결과 반환
+    - 논문 출처 포함된 근거 기반 분석
+    
+    n8n에서 이 응답을 받아 Analysis_Reports 테이블에 저장하면 됩니다.
+    """
+    if not req.medications:
+        raise HTTPException(status_code=400, detail="약물 목록이 비어있습니다.")
+
+    # 약물 정보를 텍스트로 포맷
+    med_lines = []
+    drug_names = []
+    for med in req.medications:
+        name = med.get("drug_name", "")
+        dosage = med.get("dosage", "")
+        frequency = med.get("frequency", "")
+        drug_names.append(name)
+        line = f"- {name}"
+        if dosage:
+            line += f" {dosage}"
+        if frequency:
+            line += f" ({frequency})"
+        med_lines.append(line)
+
+    medications_text = "\n".join(med_lines)
+
+    # Solar + RAG 분석 호출
+    try:
+        result = await analyze_medications(medications_text)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Solar API 호출 실패: {str(e)}")
+
+    return AnalyzeResponse(**result)
+
+
+# --- 5. AI 챗봇 ---
 
 @app.post("/chatbot", response_model=ChatResponse)
 async def chatbot_endpoint(req: ChatRequest):

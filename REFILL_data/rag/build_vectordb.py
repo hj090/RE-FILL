@@ -22,6 +22,7 @@ EMBEDDING_URL = "https://api.upstage.ai/v1/embeddings"
 EMBEDDING_MODEL = "embedding-query"
 
 KNOWLEDGE_PATH = os.path.join(os.path.dirname(__file__), "knowledge", "drug_nutrient_mapping.json")
+DUR_KNOWLEDGE_PATH = os.path.join(os.path.dirname(__file__), "knowledge", "dur_safety_info.json")
 CHROMA_PATH = os.path.join(os.path.dirname(__file__), "chroma_db")
 
 
@@ -65,7 +66,14 @@ def main():
     with open(KNOWLEDGE_PATH, "r", encoding="utf-8") as f:
         knowledge = json.load(f)
 
-    print(f"[1/3] 지식 데이터 로드 완료: {len(knowledge)}건")
+    # DUR 데이터 로드 (있으면)
+    dur_knowledge = []
+    if os.path.exists(DUR_KNOWLEDGE_PATH):
+        with open(DUR_KNOWLEDGE_PATH, "r", encoding="utf-8") as f:
+            dur_knowledge = json.load(f)
+
+    total_count = len(knowledge) + len(dur_knowledge)
+    print(f"[1/3] 지식 데이터 로드 완료: 약물-영양소 {len(knowledge)}건 + DUR {len(dur_knowledge)}건 = 총 {total_count}건")
 
     # 2) ChromaDB 초기화
     client = chromadb.PersistentClient(path=CHROMA_PATH)
@@ -106,6 +114,34 @@ def main():
         )
 
         print(f"  [{i+1}/{len(knowledge)}] {item['drug_class']} - {', '.join(item['drug_names'])}")
+
+    # DUR 데이터 임베딩
+    if dur_knowledge:
+        print(f"\n  DUR 데이터 임베딩 중 ({len(dur_knowledge)}건)...")
+        for i, item in enumerate(dur_knowledge):
+            doc_text = item.get("content", "")
+            if not doc_text:
+                continue
+
+            embedding = get_embedding(doc_text)
+
+            metadata = {
+                "id": item["id"],
+                "type": item.get("type", "DUR"),
+                "drug_names": ", ".join(item.get("drug_names", [])),
+                "severity": item.get("severity", ""),
+                "source": item.get("source", "식품의약품안전처 DUR"),
+            }
+
+            collection.add(
+                ids=[item["id"]],
+                embeddings=[embedding],
+                documents=[doc_text],
+                metadatas=[metadata],
+            )
+
+            if (i + 1) % 20 == 0 or i == len(dur_knowledge) - 1:
+                print(f"  [DUR {i+1}/{len(dur_knowledge)}] 처리 완료")
 
     print(f"\n[3/3] 완료! ChromaDB 저장 위치: {CHROMA_PATH}")
     print(f"  총 {collection.count()}건 저장됨")
