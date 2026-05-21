@@ -99,8 +99,14 @@ async def get_user_medications(user_id: str) -> list[dict]:
 # === 분석 리포트 관련 ===
 
 async def get_analysis_report_by_prescription(record_id: str) -> dict | None:
-    """특정 처방전 record_id에 연결된 Analysis_Reports 조회"""
+    """특정 처방전에 연결된 Analysis_Reports 조회
+    
+    Airtable Link 필드는 연결된 레코드의 Primary 필드값으로 표시되므로,
+    먼저 record_id로 직접 검색하고, 안 되면 user_id(Primary)로 재검색
+    """
     url = f"{AIRTABLE_BASE_URL}/{AIRTABLE_ANALYSIS_TABLE}"
+    
+    # 1차: record_id로 Link 필드 검색
     params = {
         "filterByFormula": f"FIND('{record_id}', ARRAYJOIN({{prescription_id}}))",
     }
@@ -108,9 +114,35 @@ async def get_analysis_report_by_prescription(record_id: str) -> dict | None:
         resp = await client.get(url, headers=HEADERS, params=params)
         resp.raise_for_status()
         records = resp.json().get("records", [])
-        if not records:
+        if records:
+            return records[0]["fields"]
+
+    # 2차: Prescriptions에서 user_id 가져와서 검색
+    # (Link 필드가 Primary 필드값 = user_id로 표시되는 경우)
+    prescription_url = f"{AIRTABLE_BASE_URL}/{AIRTABLE_PRESCRIPTIONS_TABLE}/{record_id}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(prescription_url, headers=HEADERS)
+        if resp.status_code != 200:
             return None
-        return records[0]["fields"]
+        user_id = resp.json().get("fields", {}).get("user_id", "")
+
+    if not user_id:
+        return None
+
+    # user_id로 Analysis_Reports 검색
+    params2 = {
+        "filterByFormula": f"FIND('{user_id}', ARRAYJOIN({{prescription_id}}))",
+        "sort[0][field]": "created_at",
+        "sort[0][direction]": "desc",
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=HEADERS, params=params2)
+        resp.raise_for_status()
+        records = resp.json().get("records", [])
+        if records:
+            return records[0]["fields"]
+
+    return None
 
 
 # === 대화 로그 ===
