@@ -4,8 +4,8 @@ REFILL 챗봇 백엔드 API (FastAPI)
 엔드포인트:
   GET  /health        — 헬스체크
   GET  /loadingpage   — 분석 완료 여부 확인 (Polling)
-  GET  /report        — 분석 리포트 상세 조회
   GET  /history       — 과거 리포트 목록
+  POST /analyze       — 처방전 분석 (n8n용, RAG 포함)
   POST /chatbot       — AI 챗봇 질의응답
 """
 
@@ -16,9 +16,6 @@ from typing import Optional, List
 
 from airtable_client import (
     get_prescriptions,
-    get_prescription_by_record_id,
-    get_medications_by_prescription,
-    get_analysis_report_by_prescription,
     get_user_medications,
     save_chat_log,
 )
@@ -27,7 +24,7 @@ from solar_client import chat, analyze_medications
 app = FastAPI(
     title="REFILL API",
     description="처방약 기반 영양제 추천 서비스 백엔드 API",
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs",       # Swagger UI
     redoc_url="/redoc",     # ReDoc
 )
@@ -63,22 +60,6 @@ class ChatResponse(BaseModel):
 class LoadingResponse(BaseModel):
     status: str  # "completed" | "pending"
     record_id: Optional[str] = None
-
-
-class MedicationItem(BaseModel):
-    drug_name: str
-    dosage: Optional[str] = None
-    frequency: Optional[str] = None
-    duration_days: Optional[int] = None
-    depleted_nutrients: Optional[str] = None
-    recommended_supplements: Optional[str] = None
-    caution_notes: Optional[str] = None
-
-
-class ReportResponse(BaseModel):
-    prescription: dict
-    medications: list[dict]
-    analysis: Optional[dict] = None
 
 
 class HistoryItem(BaseModel):
@@ -138,54 +119,7 @@ async def loadingpage(user_id: str = Query(..., description="사용자 고유 ID
     return LoadingResponse(status="pending")
 
 
-# --- 2. 종합 분석 리포트 ---
-
-@app.get("/report", response_model=ReportResponse)
-async def report(record_id: str = Query(..., description="처방전 Airtable record ID (rec...)")):
-    """
-    특정 처방전의 상세 분석 리포트를 반환합니다.
-    - 처방전 정보 + 연결된 약물 목록
-    """
-    prescription = await get_prescription_by_record_id(record_id)
-
-    if not prescription:
-        raise HTTPException(status_code=404, detail="해당 처방전을 찾을 수 없습니다.")
-
-    medications = await get_medications_by_prescription(record_id)
-    analysis = await get_analysis_report_by_prescription(record_id)
-
-    return ReportResponse(
-        prescription={
-            "record_id": prescription.get("record_id"),
-            "user_id": prescription.get("user_id"),
-            "scanned_at": prescription.get("scanned_at"),
-            "medication_count": prescription.get("medication_count"),
-            "solar_summary": prescription.get("solar_summary"),
-        },
-        medications=[
-            {
-                "drug_name": med.get("drug_name", ""),
-                "dosage": med.get("dosage"),
-                "frequency": med.get("frequency"),
-                "duration_days": med.get("duration_days"),
-                "depleted_nutrients": med.get("depleted_nutrients"),
-                "recommended_supplements": med.get("recommended_supplements"),
-                "caution_notes": med.get("caution_notes"),
-            }
-            for med in medications
-        ],
-        analysis={
-            "overall_nutrients_depleted": analysis.get("overall_nutrients_depleted"),
-            "overall_supplements_recommended": analysis.get("overall_supplements_recommended"),
-            "dosage_guide": analysis.get("dosage_guide"),
-            "warnings": analysis.get("warnings"),
-            "full_report": analysis.get("full_report"),
-            "created_at": analysis.get("created_at"),
-        } if analysis else None,
-    )
-
-
-# --- 3. 과거 기록 조회 ---
+# --- 2. 과거 기록 조회 ---
 
 @app.get("/history", response_model=List[HistoryItem])
 async def history(user_id: str = Query(..., description="사용자 고유 ID")):
@@ -208,7 +142,7 @@ async def history(user_id: str = Query(..., description="사용자 고유 ID")):
     ]
 
 
-# --- 4. 처방전 분석 (n8n용, RAG 포함) ---
+# --- 3. 처방전 분석 (n8n용, RAG 포함) ---
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_endpoint(req: AnalyzeRequest):
@@ -248,17 +182,24 @@ async def analyze_endpoint(req: AnalyzeRequest):
     return AnalyzeResponse(**result)
 
 
-# --- 5. AI 챗봇 ---
+# --- 4. AI 챗봇 (solar_summary 참조) ---
 
 @app.post("/chatbot", response_model=ChatResponse)
 async def chatbot_endpoint(req: ChatRequest):
     """
     사용자 질문을 Solar LLM에 전달하고 영양제 추천 응답을 반환합니다.
     - Airtable에서 user_id의 최근 약물 목록 자동 조회
+    - Prescriptions의 solar_summary를 컨텍스트에 포함
     - RAG 검색 결과 포함
     - 대화 로그 자동 저장
     """
-    # 1) 약물 정보 조회
+    # 1) 처방전 정보 조회 (solar_summary 포함)
+    prescriptions = await get_prescriptions(req.user_id)
+    solar_summary = ""
+    if prescriptions:
+        solar_summary = prescriptions[0].get("solar_summary", "") or ""
+
+    # 2) 약물 정보 조회
     medications = await get_user_medications(req.user_id)
 
     if not medications:
@@ -284,7 +225,11 @@ async def chatbot_endpoint(req: ChatRequest):
 
         medications_context = "\n".join(med_lines)
 
-    # 2) Solar Pro 3 호출
+    # 3) solar_summary를 컨텍스트에 추가
+    if solar_summary:
+        medications_context += f"\n\n[이전 분석 요약]\n{solar_summary}"
+
+    # 4) Solar Pro 3 호출
     try:
         answer = await chat(
             user_message=req.message,
@@ -294,7 +239,7 @@ async def chatbot_endpoint(req: ChatRequest):
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Solar API 호출 실패: {str(e)}")
 
-    # 3) 대화 로그 저장 (실패해도 응답은 반환)
+    # 5) 대화 로그 저장 (실패해도 응답은 반환)
     try:
         await save_chat_log(
             user_id=req.user_id,
@@ -304,7 +249,7 @@ async def chatbot_endpoint(req: ChatRequest):
     except Exception:
         pass
 
-    # 4) 응답
+    # 6) 응답
     return ChatResponse(
         answer=answer,
         medications_used=med_names,
