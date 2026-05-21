@@ -18,6 +18,7 @@ from airtable_client import (
     get_prescriptions,
     get_prescription_by_record_id,
     get_medications_by_prescription,
+    get_analysis_report_by_prescription,
     get_user_medications,
     save_chat_log,
 )
@@ -77,6 +78,7 @@ class MedicationItem(BaseModel):
 class ReportResponse(BaseModel):
     prescription: dict
     medications: list[dict]
+    analysis: Optional[dict] = None
 
 
 class HistoryItem(BaseModel):
@@ -137,6 +139,7 @@ async def report(record_id: str = Query(..., description="처방전 Airtable rec
         raise HTTPException(status_code=404, detail="해당 처방전을 찾을 수 없습니다.")
 
     medications = await get_medications_by_prescription(record_id)
+    analysis = await get_analysis_report_by_prescription(record_id)
 
     return ReportResponse(
         prescription={
@@ -158,6 +161,14 @@ async def report(record_id: str = Query(..., description="처방전 Airtable rec
             }
             for med in medications
         ],
+        analysis={
+            "overall_nutrients_depleted": analysis.get("overall_nutrients_depleted"),
+            "overall_supplements_recommended": analysis.get("overall_supplements_recommended"),
+            "dosage_guide": analysis.get("dosage_guide"),
+            "warnings": analysis.get("warnings"),
+            "full_report": analysis.get("full_report"),
+            "created_at": analysis.get("created_at"),
+        } if analysis else None,
     )
 
 

@@ -11,6 +11,7 @@ from config import (
     AIRTABLE_PRESCRIPTIONS_TABLE,
     AIRTABLE_MEDICATIONS_TABLE,
     AIRTABLE_CHAT_TABLE,
+    AIRTABLE_ANALYSIS_TABLE,
 )
 
 HEADERS = {
@@ -93,6 +94,23 @@ async def get_user_medications(user_id: str) -> list[dict]:
         resp.raise_for_status()
         records = resp.json().get("records", [])
         return [r["fields"] for r in records]
+
+
+# === 분석 리포트 관련 ===
+
+async def get_analysis_report_by_prescription(record_id: str) -> dict | None:
+    """특정 처방전 record_id에 연결된 Analysis_Reports 조회"""
+    url = f"{AIRTABLE_BASE_URL}/{AIRTABLE_ANALYSIS_TABLE}"
+    params = {
+        "filterByFormula": f"FIND('{record_id}', ARRAYJOIN({{prescription_id}}))",
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=HEADERS, params=params)
+        resp.raise_for_status()
+        records = resp.json().get("records", [])
+        if not records:
+            return None
+        return records[0]["fields"]
 
 
 # === 대화 로그 ===
