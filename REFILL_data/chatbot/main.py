@@ -142,7 +142,58 @@ async def history(user_id: str = Query(..., description="사용자 고유 ID")):
     ]
 
 
-# --- 3. 처방전 분석 (n8n용, RAG 포함) ---
+# --- 3. DUR 안전정보 조회 (n8n용) ---
+
+@app.post("/dur/check")
+async def dur_check(req: dict):
+    """
+    약물 목록을 받아 DUR 데이터에서 해당 약물의 안전정보를 반환합니다.
+    - 병용금기, 용량주의, 노인주의, 임부금기 등
+    
+    Request:
+      {"medications": ["메트포르민", "아토르바스타틴", "오메프라졸"]}
+    
+    Response:
+      [{"type": "병용금기", "drug_names": [...], "content": "...", "severity": "높음"}, ...]
+    """
+    import json
+    import os
+
+    medications = req.get("medications", [])
+    if not medications:
+        raise HTTPException(status_code=400, detail="medications 목록이 비어있습니다.")
+
+    # DUR 데이터 로드
+    dur_path = os.path.join(os.path.dirname(__file__), "..", "rag", "knowledge", "dur_safety_info.json")
+    if not os.path.exists(dur_path):
+        return []
+
+    with open(dur_path, "r", encoding="utf-8") as f:
+        dur_data = json.load(f)
+
+    # 약물명 매칭 (부분 일치 포함)
+    results = []
+    for item in dur_data:
+        item_drugs = item.get("drug_names", [])
+        for user_drug in medications:
+            for dur_drug in item_drugs:
+                if user_drug in dur_drug or dur_drug in user_drug:
+                    results.append({
+                        "type": item.get("type", ""),
+                        "drug_names": item_drugs,
+                        "content": item.get("content", ""),
+                        "severity": item.get("severity", ""),
+                        "source": item.get("source", ""),
+                    })
+                    break
+            else:
+                continue
+            break
+
+    return results
+
+
+# --- 4. 처방전 분석 (n8n용, RAG 포함) ---
 
 @app.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_endpoint(req: AnalyzeRequest):
